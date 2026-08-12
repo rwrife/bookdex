@@ -1,0 +1,12 @@
+# Build artifacts
+bin/
+obj/
+
+# Rider / VS / VSCode
+.vs/
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
