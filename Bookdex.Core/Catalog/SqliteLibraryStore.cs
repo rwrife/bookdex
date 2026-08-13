@@ -68,6 +68,43 @@ public sealed class SqliteLibraryStore : ILibraryStore
             CREATE INDEX IF NOT EXISTS idx_file_signatures_content_hash
                 ON file_signatures(content_hash);
 
+            CREATE TABLE IF NOT EXISTS shelves (
+                shelf_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            );
+
+            CREATE TABLE IF NOT EXISTS book_shelves (
+                book_id INTEGER NOT NULL,
+                shelf_id INTEGER NOT NULL,
+                PRIMARY KEY (book_id, shelf_id),
+                FOREIGN KEY(book_id) REFERENCES books(book_id) ON DELETE CASCADE,
+                FOREIGN KEY(shelf_id) REFERENCES shelves(shelf_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS tags (
+                tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            );
+
+            CREATE TABLE IF NOT EXISTS book_tags (
+                book_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                PRIMARY KEY (book_id, tag_id),
+                FOREIGN KEY(book_id) REFERENCES books(book_id) ON DELETE CASCADE,
+                FOREIGN KEY(tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS reading_state (
+                book_id INTEGER PRIMARY KEY,
+                status TEXT,
+                rating INTEGER,
+                updated_utc TEXT NOT NULL,
+                FOREIGN KEY(book_id) REFERENCES books(book_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reading_state_status ON reading_state(status);
+            CREATE INDEX IF NOT EXISTS idx_reading_state_rating ON reading_state(rating);
+
             CREATE VIRTUAL TABLE IF NOT EXISTS book_fts
                 USING fts5(book_id UNINDEXED, title, authors, content);
             """;
@@ -258,6 +295,167 @@ public sealed class SqliteLibraryStore : ILibraryStore
         return results;
     }
 
+    public void ReplaceBookShelves(long bookId, IEnumerable<string> shelfNames)
+    {
+        ArgumentNullException.ThrowIfNull(shelfNames);
+        var normalizedShelves = NormalizeNames(shelfNames);
+
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        EnsureBookExists(connection, transaction, bookId);
+
+        using (var clear = connection.CreateCommand())
+        {
+            clear.Transaction = transaction;
+            clear.CommandText = "DELETE FROM book_shelves WHERE book_id = $book_id;";
+            clear.Parameters.AddWithValue("$book_id", bookId);
+            clear.ExecuteNonQuery();
+        }
+
+        foreach (var shelf in normalizedShelves)
+        {
+            var shelfId = EnsureShelf(connection, transaction, shelf);
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT OR IGNORE INTO book_shelves (book_id, shelf_id)
+                VALUES ($book_id, $shelf_id);
+                """;
+            insert.Parameters.AddWithValue("$book_id", bookId);
+            insert.Parameters.AddWithValue("$shelf_id", shelfId);
+            insert.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
+    public void ReplaceBookTags(long bookId, IEnumerable<string> tagNames)
+    {
+        ArgumentNullException.ThrowIfNull(tagNames);
+        var normalizedTags = NormalizeNames(tagNames);
+
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        EnsureBookExists(connection, transaction, bookId);
+
+        using (var clear = connection.CreateCommand())
+        {
+            clear.Transaction = transaction;
+            clear.CommandText = "DELETE FROM book_tags WHERE book_id = $book_id;";
+            clear.Parameters.AddWithValue("$book_id", bookId);
+            clear.ExecuteNonQuery();
+        }
+
+        foreach (var tag in normalizedTags)
+        {
+            var tagId = EnsureTag(connection, transaction, tag);
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT OR IGNORE INTO book_tags (book_id, tag_id)
+                VALUES ($book_id, $tag_id);
+                """;
+            insert.Parameters.AddWithValue("$book_id", bookId);
+            insert.Parameters.AddWithValue("$tag_id", tagId);
+            insert.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
+    public void SetReadingState(long bookId, BookReadingStatus? status, int? rating)
+    {
+        if (rating is < 0 or > 5)
+        {
+            throw new ArgumentOutOfRangeException(nameof(rating), "Rating must be between 0 and 5.");
+        }
+
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        EnsureBookExists(connection, transaction, bookId);
+
+        if (status is null && rating is null)
+        {
+            using var delete = connection.CreateCommand();
+            delete.Transaction = transaction;
+            delete.CommandText = "DELETE FROM reading_state WHERE book_id = $book_id;";
+            delete.Parameters.AddWithValue("$book_id", bookId);
+            delete.ExecuteNonQuery();
+            transaction.Commit();
+            return;
+        }
+
+        using (var upsert = connection.CreateCommand())
+        {
+            upsert.Transaction = transaction;
+            upsert.CommandText = """
+                INSERT INTO reading_state (book_id, status, rating, updated_utc)
+                VALUES ($book_id, $status, $rating, $updated_utc)
+                ON CONFLICT(book_id) DO UPDATE SET
+                    status = excluded.status,
+                    rating = excluded.rating,
+                    updated_utc = excluded.updated_utc;
+                """;
+            upsert.Parameters.AddWithValue("$book_id", bookId);
+            upsert.Parameters.AddWithValue("$status", (object?)status?.ToString().ToLowerInvariant() ?? DBNull.Value);
+            upsert.Parameters.AddWithValue("$rating", (object?)rating ?? DBNull.Value);
+            upsert.Parameters.AddWithValue("$updated_utc", DateTimeOffset.UtcNow.ToString("O"));
+            upsert.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
+    public BookOrganizationSnapshot GetBookOrganization(long bookId)
+    {
+        using var connection = OpenConnection();
+
+        BookReadingStatus? readingStatus = null;
+        int? rating = null;
+
+        using (var readingCommand = connection.CreateCommand())
+        {
+            readingCommand.CommandText = """
+                SELECT status, rating
+                FROM reading_state
+                WHERE book_id = $book_id
+                LIMIT 1;
+                """;
+            readingCommand.Parameters.AddWithValue("$book_id", bookId);
+
+            using var reader = readingCommand.ExecuteReader();
+            if (reader.Read())
+            {
+                readingStatus = ParseReadingStatus(reader.IsDBNull(0) ? null : reader.GetString(0));
+                rating = reader.IsDBNull(1) ? null : reader.GetInt32(1);
+            }
+        }
+
+        var shelves = GetLinkedNames(
+            connection,
+            """
+            SELECT s.name
+            FROM book_shelves bs
+            INNER JOIN shelves s ON s.shelf_id = bs.shelf_id
+            WHERE bs.book_id = $book_id
+            ORDER BY s.name COLLATE NOCASE;
+            """,
+            bookId);
+
+        var tags = GetLinkedNames(
+            connection,
+            """
+            SELECT t.name
+            FROM book_tags bt
+            INNER JOIN tags t ON t.tag_id = bt.tag_id
+            WHERE bt.book_id = $book_id
+            ORDER BY t.name COLLATE NOCASE;
+            """,
+            bookId);
+
+        return new BookOrganizationSnapshot(bookId, readingStatus, rating, shelves, tags);
+    }
+
     public int GetBookCount()
     {
         using var connection = OpenConnection();
@@ -342,6 +540,99 @@ public sealed class SqliteLibraryStore : ILibraryStore
             lookup.Parameters.AddWithValue("$name", authorName);
             return Convert.ToInt64(lookup.ExecuteScalar());
         }
+    }
+
+    private static long EnsureShelf(SqliteConnection connection, SqliteTransaction transaction, string shelfName)
+    {
+        using (var insert = connection.CreateCommand())
+        {
+            insert.Transaction = transaction;
+            insert.CommandText = "INSERT OR IGNORE INTO shelves (name) VALUES ($name);";
+            insert.Parameters.AddWithValue("$name", shelfName);
+            insert.ExecuteNonQuery();
+        }
+
+        using (var lookup = connection.CreateCommand())
+        {
+            lookup.Transaction = transaction;
+            lookup.CommandText = "SELECT shelf_id FROM shelves WHERE name = $name LIMIT 1;";
+            lookup.Parameters.AddWithValue("$name", shelfName);
+            return Convert.ToInt64(lookup.ExecuteScalar());
+        }
+    }
+
+    private static long EnsureTag(SqliteConnection connection, SqliteTransaction transaction, string tagName)
+    {
+        using (var insert = connection.CreateCommand())
+        {
+            insert.Transaction = transaction;
+            insert.CommandText = "INSERT OR IGNORE INTO tags (name) VALUES ($name);";
+            insert.Parameters.AddWithValue("$name", tagName);
+            insert.ExecuteNonQuery();
+        }
+
+        using (var lookup = connection.CreateCommand())
+        {
+            lookup.Transaction = transaction;
+            lookup.CommandText = "SELECT tag_id FROM tags WHERE name = $name LIMIT 1;";
+            lookup.Parameters.AddWithValue("$name", tagName);
+            return Convert.ToInt64(lookup.ExecuteScalar());
+        }
+    }
+
+    private static void EnsureBookExists(SqliteConnection connection, SqliteTransaction transaction, long bookId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT 1 FROM books WHERE book_id = $book_id LIMIT 1;";
+        command.Parameters.AddWithValue("$book_id", bookId);
+
+        if (command.ExecuteScalar() is null)
+        {
+            throw new InvalidOperationException($"Book '{bookId}' does not exist in catalog.");
+        }
+    }
+
+    private static List<string> NormalizeNames(IEnumerable<string> names)
+    {
+        return names
+            .Select(name => name?.Trim())
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static List<string> GetLinkedNames(SqliteConnection connection, string sql, long bookId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$book_id", bookId);
+
+        using var reader = command.ExecuteReader();
+        var names = new List<string>();
+        while (reader.Read())
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        return names;
+    }
+
+    private static BookReadingStatus? ParseReadingStatus(string? rawStatus)
+    {
+        if (string.IsNullOrWhiteSpace(rawStatus))
+        {
+            return null;
+        }
+
+        return rawStatus.Trim().ToLowerInvariant() switch
+        {
+            "unread" => BookReadingStatus.Unread,
+            "reading" => BookReadingStatus.Reading,
+            "finished" => BookReadingStatus.Finished,
+            _ => null,
+        };
     }
 
     private static void UpsertFts(

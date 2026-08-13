@@ -91,6 +91,63 @@ public sealed class SqliteLibraryStoreTests
         Assert.Contains("Nora", results[0].Authors);
     }
 
+    [Fact]
+    public void Organization_PersistsShelvesTagsStatusAndRating()
+    {
+        using var fixture = CreateFixture();
+
+        var sourcePath = Path.Combine(fixture.RootDir, "organize.epub");
+        var bookId = fixture.Store.UpsertBook(
+            CreateBookRecord(
+                sourcePath,
+                title: "Organization Fixture",
+                contentHash: Hash("organization-fixture"),
+                fullText: "Organizing titles with tags and shelves.",
+                authors: ["Alex Archivist"]),
+            new FileSignature(sourcePath, 400, 50));
+
+        fixture.Store.ReplaceBookShelves(bookId, [" Favorites ", "Sci-Fi", "favorites"]);
+        fixture.Store.ReplaceBookTags(bookId, ["space opera", "Classic", "space opera"]);
+        fixture.Store.SetReadingState(bookId, BookReadingStatus.Reading, 4);
+
+        var first = fixture.Store.GetBookOrganization(bookId);
+
+        Assert.Equal(BookReadingStatus.Reading, first.ReadingStatus);
+        Assert.Equal(4, first.Rating);
+        Assert.Equal(new[] { "Favorites", "Sci-Fi" }, first.Shelves);
+        Assert.Equal(new[] { "Classic", "space opera" }, first.Tags);
+
+        fixture.Store.ReplaceBookShelves(bookId, ["Archive"]);
+        fixture.Store.ReplaceBookTags(bookId, ["history"]);
+        fixture.Store.SetReadingState(bookId, null, null);
+
+        var second = fixture.Store.GetBookOrganization(bookId);
+
+        Assert.Null(second.ReadingStatus);
+        Assert.Null(second.Rating);
+        Assert.Equal(new[] { "Archive" }, second.Shelves);
+        Assert.Equal(new[] { "history" }, second.Tags);
+    }
+
+    [Fact]
+    public void SetReadingState_RejectsOutOfRangeRatings()
+    {
+        using var fixture = CreateFixture();
+
+        var sourcePath = Path.Combine(fixture.RootDir, "ratings.epub");
+        var bookId = fixture.Store.UpsertBook(
+            CreateBookRecord(
+                sourcePath,
+                title: "Rating Fixture",
+                contentHash: Hash("rating-fixture"),
+                fullText: "Rating validation",
+                authors: ["Robin Reader"]),
+            new FileSignature(sourcePath, 320, 77));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => fixture.Store.SetReadingState(bookId, BookReadingStatus.Unread, -1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => fixture.Store.SetReadingState(bookId, BookReadingStatus.Unread, 6));
+    }
+
     private static CatalogBookRecord CreateBookRecord(
         string sourcePath,
         string title,
