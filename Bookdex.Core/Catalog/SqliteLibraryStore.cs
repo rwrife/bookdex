@@ -262,7 +262,8 @@ public sealed class SqliteLibraryStore : ILibraryStore
                 COALESCE(b.title, ''),
                 COALESCE(author_rollup.authors, ''),
                 COALESCE(snippet(book_fts, 3, '[', ']', '…', 12), ''),
-                bm25(book_fts)
+                bm25(book_fts),
+                COALESCE(b.primary_path, '')
             FROM book_fts
             INNER JOIN books b ON b.book_id = CAST(book_fts.book_id AS INTEGER)
             LEFT JOIN (
@@ -289,7 +290,8 @@ public sealed class SqliteLibraryStore : ILibraryStore
                 reader.GetString(1),
                 reader.GetString(2),
                 reader.GetString(3),
-                reader.IsDBNull(4) ? double.MaxValue : reader.GetDouble(4)));
+                reader.IsDBNull(4) ? double.MaxValue : reader.GetDouble(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5)));
         }
 
         return results;

@@ -1,0 +1,85 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        x:Class="Bookdex.App.Views.MainWindow"
+        mc:Ignorable="d"
+        Width="1200"
+        Height="760"
+        MinWidth="960"
+        MinHeight="640"
+        Title="bookdex">
+  <Grid Margin="16" RowDefinitions="Auto,Auto,*">
+    <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,12">
+      <TextBox Text="{Binding SearchText}"
+               Watermark="Search title, author, or content..." />
+      <ComboBox Grid.Column="1"
+                Width="180"
+                Margin="12,0,0,0"
+                ItemsSource="{Binding SortOptions}"
+                SelectedItem="{Binding SelectedSortOption}" />
+    </Grid>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,12">
+      <TextBox Text="{Binding LibraryFolderPath}"
+               Watermark="Library folder path..." />
+      <Button Grid.Column="1"
+              Margin="12,0,0,0"
+              Content="Add Library Folder"
+              Command="{Binding AddLibraryFolderCommand}" />
+      <ProgressBar Grid.Column="2"
+                   Margin="12,0,0,0"
+                   Width="180"
+                   Height="24"
+                   Minimum="0"
+                   Maximum="100"
+                   Value="{Binding ScanProgressPercent}"
+                   IsIndeterminate="{Binding IsScanningIndeterminate}" />
+    </Grid>
+
+    <Grid Grid.Row="2" ColumnDefinitions="2*,*">
+      <Border Grid.Column="0" Margin="0,0,16,0" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Padding="12">
+        <Grid RowDefinitions="Auto,*">
+          <TextBlock Text="{Binding ResultSummary}" FontWeight="SemiBold" Margin="0,0,0,8" />
+
+          <ListBox Grid.Row="1"
+                   ItemsSource="{Binding SearchResults}"
+                   SelectedItem="{Binding SelectedResult}">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Border BorderBrush="#1F2937" BorderThickness="0,0,0,1" Padding="8">
+                  <StackPanel Spacing="4">
+                    <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Authors}" Opacity="0.8" />
+                    <TextBlock Text="{Binding Snippet}" TextWrapping="Wrap" Opacity="0.7" MaxHeight="48" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+
+      <Border Grid.Column="1" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Padding="12">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Book details" FontSize="18" FontWeight="Bold" />
+
+          <TextBlock Text="{Binding SelectedResult.Title}" FontSize="16" FontWeight="SemiBold" />
+          <TextBlock Text="{Binding SelectedResult.Authors}" Opacity="0.8" TextWrapping="Wrap" />
+
+          <TextBlock Text="Snippet" FontWeight="SemiBold" Margin="0,8,0,0" />
+          <TextBlock Text="{Binding SelectedResult.Snippet}" TextWrapping="Wrap" />
+
+          <TextBlock Text="File location" FontWeight="SemiBold" Margin="0,8,0,0" />
+          <TextBlock Text="{Binding SelectedResult.PrimaryPath}" TextWrapping="Wrap" />
+
+          <TextBlock Text="Cover preview wiring lands in a follow-up slice." FontStyle="Italic" Opacity="0.6" Margin="0,8,0,0" />
+
+          <Border Margin="0,12,0,0" Padding="8" Background="#111827" CornerRadius="6">
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" />
+          </Border>
+        </StackPanel>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>
