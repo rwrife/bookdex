@@ -73,6 +73,13 @@
           <TextBlock Text="File location" FontWeight="SemiBold" Margin="0,8,0,0" />
           <TextBlock Text="{Binding SelectedResult.PrimaryPath}" TextWrapping="Wrap" />
 
+          <TextBlock Text="Resume" FontWeight="SemiBold" Margin="0,8,0,0" />
+          <TextBlock Text="{Binding SelectedResumeSummary}" TextWrapping="Wrap" />
+          <Button Content="Resume Reading"
+                  Command="{Binding ResumeReadingCommand}"
+                  HorizontalAlignment="Left"
+                  Margin="0,4,0,0" />
+
           <TextBlock Text="Cover preview wiring lands in a follow-up slice." FontStyle="Italic" Opacity="0.6" Margin="0,8,0,0" />
 
           <Border Margin="0,12,0,0" Padding="8" Background="#111827" CornerRadius="6">

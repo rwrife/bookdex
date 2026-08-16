@@ -10,15 +10,22 @@ public partial class LibraryShellViewModel : ViewModelBase
 {
     private readonly ISearchService _searchService;
     private readonly ILibraryScanService _scanService;
+    private readonly IReadingProgressStore _readingProgressStore;
 
     private IReadOnlyList<CatalogSearchResult> _currentResults = [];
+    private ReadingProgressSnapshot? _selectedProgress;
 
-    public LibraryShellViewModel(ISearchService searchService, ILibraryScanService scanService)
+    public LibraryShellViewModel(
+        ISearchService searchService,
+        ILibraryScanService scanService,
+        IReadingProgressStore readingProgressStore)
     {
         _searchService = searchService ?? throw new ArgumentNullException(nameof(searchService));
         _scanService = scanService ?? throw new ArgumentNullException(nameof(scanService));
+        _readingProgressStore = readingProgressStore ?? throw new ArgumentNullException(nameof(readingProgressStore));
 
         AddLibraryFolderCommand = new AsyncRelayCommand(AddLibraryFolderAsync, CanScan);
+        ResumeReadingCommand = new RelayCommand(ResumeSelectedBook, CanResumeSelectedBook);
         SortOptions = ["Relevance", "Title (A-Z)", "Author (A-Z)"];
     }
 
@@ -27,6 +34,8 @@ public partial class LibraryShellViewModel : ViewModelBase
     public IReadOnlyList<string> SortOptions { get; }
 
     public IAsyncRelayCommand AddLibraryFolderCommand { get; }
+
+    public IRelayCommand ResumeReadingCommand { get; }
 
     [ObservableProperty]
     private string searchText = string.Empty;
@@ -42,6 +51,9 @@ public partial class LibraryShellViewModel : ViewModelBase
 
     [ObservableProperty]
     private string statusMessage = "Ready. Add a library folder to scan local files.";
+
+    [ObservableProperty]
+    private string selectedResumeSummary = "Select a book to see resume status.";
 
     [ObservableProperty]
     private bool isScanning;
@@ -68,6 +80,11 @@ public partial class LibraryShellViewModel : ViewModelBase
     partial void OnLibraryFolderPathChanged(string value)
     {
         AddLibraryFolderCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnSelectedResultChanged(LibraryBookCardViewModel? value)
+    {
+        RefreshResumeState();
     }
 
     private bool CanScan()
@@ -154,6 +171,54 @@ public partial class LibraryShellViewModel : ViewModelBase
             IsScanningIndeterminate = false;
             AddLibraryFolderCommand.NotifyCanExecuteChanged();
         }
+    }
+
+    private bool CanResumeSelectedBook()
+    {
+        return SelectedResult is not null && _selectedProgress is not null;
+    }
+
+    private void ResumeSelectedBook()
+    {
+        if (SelectedResult is null || _selectedProgress is null)
+        {
+            return;
+        }
+
+        var progressLabel = _selectedProgress.ProgressPercent is null
+            ? _selectedProgress.Locator
+            : $"{_selectedProgress.Locator} ({_selectedProgress.ProgressPercent.Value:0.#}% complete)";
+
+        StatusMessage = $"Reader shell follow-up: would resume '{SelectedResult.Title}' at {progressLabel}.";
+    }
+
+    private void RefreshResumeState()
+    {
+        _selectedProgress = null;
+
+        if (SelectedResult is null)
+        {
+            SelectedResumeSummary = "Select a book to see resume status.";
+            ResumeReadingCommand.NotifyCanExecuteChanged();
+            return;
+        }
+
+        var progress = _readingProgressStore.GetProgress(SelectedResult.BookId);
+        if (progress is null)
+        {
+            SelectedResumeSummary = "No saved reading position yet.";
+            ResumeReadingCommand.NotifyCanExecuteChanged();
+            return;
+        }
+
+        _selectedProgress = progress;
+
+        var progressSuffix = progress.ProgressPercent is null
+            ? string.Empty
+            : $" ({progress.ProgressPercent.Value:0.#}% complete)";
+
+        SelectedResumeSummary = $"Resume from {progress.Locator}{progressSuffix}.";
+        ResumeReadingCommand.NotifyCanExecuteChanged();
     }
 
     private void ApplySortAndProjection()

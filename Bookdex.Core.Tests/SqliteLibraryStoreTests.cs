@@ -148,6 +148,73 @@ public sealed class SqliteLibraryStoreTests
         Assert.Throws<ArgumentOutOfRangeException>(() => fixture.Store.SetReadingState(bookId, BookReadingStatus.Unread, 6));
     }
 
+    [Fact]
+    public void ReadingProgress_CanBeSavedAndUpdatedPerBook()
+    {
+        using var fixture = CreateFixture();
+
+        var sourcePath = Path.Combine(fixture.RootDir, "resume.epub");
+        var bookId = fixture.Store.UpsertBook(
+            CreateBookRecord(
+                sourcePath,
+                title: "Resume Fixture",
+                contentHash: Hash("resume-fixture"),
+                fullText: "Resume progress fixture",
+                authors: ["Pia Progress"]),
+            new FileSignature(sourcePath, 222, 11));
+
+        Assert.Null(fixture.Store.GetProgress(bookId));
+
+        fixture.Store.UpsertProgress(bookId, "epubcfi(/6/2[chapter1]!/4/2/14)", progressPercent: 12.5);
+
+        var first = fixture.Store.GetProgress(bookId);
+        Assert.NotNull(first);
+        Assert.Equal(bookId, first!.BookId);
+        Assert.Equal("epubcfi(/6/2[chapter1]!/4/2/14)", first.Locator);
+        Assert.Equal(12.5, first.ProgressPercent);
+
+        fixture.Store.UpsertProgress(bookId, "epubcfi(/6/2[chapter4]!/4/10/2)", progressPercent: 63.2);
+
+        var second = fixture.Store.GetProgress(bookId);
+        Assert.NotNull(second);
+        Assert.Equal("epubcfi(/6/2[chapter4]!/4/10/2)", second!.Locator);
+        Assert.Equal(63.2, second.ProgressPercent);
+        Assert.True(second.UpdatedUtc >= first.UpdatedUtc);
+    }
+
+    [Fact]
+    public void ReadingBookmarks_CanAddListAndRemoveEntries()
+    {
+        using var fixture = CreateFixture();
+
+        var sourcePath = Path.Combine(fixture.RootDir, "bookmarks.epub");
+        var bookId = fixture.Store.UpsertBook(
+            CreateBookRecord(
+                sourcePath,
+                title: "Bookmarks Fixture",
+                contentHash: Hash("bookmarks-fixture"),
+                fullText: "Bookmark persistence fixture",
+                authors: ["Ben Bookmark"]),
+            new FileSignature(sourcePath, 333, 19));
+
+        var firstBookmarkId = fixture.Store.AddBookmark(bookId, "Key quote", "page=15");
+        var secondBookmarkId = fixture.Store.AddBookmark(bookId, "Chapter break", "page=58");
+
+        var bookmarks = fixture.Store.GetBookmarks(bookId);
+        Assert.Equal(2, bookmarks.Count);
+        Assert.Equal(secondBookmarkId, bookmarks[0].BookmarkId);
+        Assert.Equal("Chapter break", bookmarks[0].Name);
+        Assert.Equal("page=58", bookmarks[0].Locator);
+        Assert.Equal(firstBookmarkId, bookmarks[1].BookmarkId);
+
+        Assert.True(fixture.Store.RemoveBookmark(bookId, firstBookmarkId));
+        Assert.False(fixture.Store.RemoveBookmark(bookId, firstBookmarkId));
+
+        var remaining = fixture.Store.GetBookmarks(bookId);
+        Assert.Single(remaining);
+        Assert.Equal(secondBookmarkId, remaining[0].BookmarkId);
+    }
+
     private static CatalogBookRecord CreateBookRecord(
         string sourcePath,
         string title,
