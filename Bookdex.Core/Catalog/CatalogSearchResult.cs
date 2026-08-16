@@ -5,4 +5,5 @@ public sealed record CatalogSearchResult(
     string Title,
     string Authors,
     string Snippet,
-    double Rank);
+    double Rank,
+    string? PrimaryPath = null);
