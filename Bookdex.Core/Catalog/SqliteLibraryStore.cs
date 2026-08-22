@@ -3,7 +3,7 @@ using Microsoft.Data.Sqlite;
 
 namespace Bookdex.Core.Catalog;
 
-public sealed class SqliteLibraryStore : ILibraryStore
+public sealed class SqliteLibraryStore : ILibraryStore, IReadingProgressStore
 {
     private readonly string _databasePath;
 
@@ -104,6 +104,27 @@ public sealed class SqliteLibraryStore : ILibraryStore
 
             CREATE INDEX IF NOT EXISTS idx_reading_state_status ON reading_state(status);
             CREATE INDEX IF NOT EXISTS idx_reading_state_rating ON reading_state(rating);
+
+            CREATE TABLE IF NOT EXISTS reading_progress (
+                book_id INTEGER PRIMARY KEY,
+                locator TEXT NOT NULL,
+                progress_percent REAL,
+                updated_utc TEXT NOT NULL,
+                FOREIGN KEY(book_id) REFERENCES books(book_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reading_progress_updated_utc ON reading_progress(updated_utc);
+
+            CREATE TABLE IF NOT EXISTS reading_bookmarks (
+                bookmark_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                locator TEXT NOT NULL,
+                created_utc TEXT NOT NULL,
+                FOREIGN KEY(book_id) REFERENCES books(book_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reading_bookmarks_book_id ON reading_bookmarks(book_id);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS book_fts
                 USING fts5(book_id UNINDEXED, title, authors, content);
@@ -408,6 +429,156 @@ public sealed class SqliteLibraryStore : ILibraryStore
         transaction.Commit();
     }
 
+    public void UpsertProgress(long bookId, string locator, double? progressPercent = null)
+    {
+        var normalizedLocator = locator?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedLocator))
+        {
+            throw new ArgumentException("Reading locator is required.", nameof(locator));
+        }
+
+        if (progressPercent is < 0 or > 100)
+        {
+            throw new ArgumentOutOfRangeException(nameof(progressPercent), "Progress must be between 0 and 100.");
+        }
+
+        var timestamp = DateTimeOffset.UtcNow;
+
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        EnsureBookExists(connection, transaction, bookId);
+
+        using (var upsert = connection.CreateCommand())
+        {
+            upsert.Transaction = transaction;
+            upsert.CommandText = """
+                INSERT INTO reading_progress (book_id, locator, progress_percent, updated_utc)
+                VALUES ($book_id, $locator, $progress_percent, $updated_utc)
+                ON CONFLICT(book_id) DO UPDATE SET
+                    locator = excluded.locator,
+                    progress_percent = excluded.progress_percent,
+                    updated_utc = excluded.updated_utc;
+                """;
+            upsert.Parameters.AddWithValue("$book_id", bookId);
+            upsert.Parameters.AddWithValue("$locator", normalizedLocator);
+            upsert.Parameters.AddWithValue("$progress_percent", (object?)progressPercent ?? DBNull.Value);
+            upsert.Parameters.AddWithValue("$updated_utc", timestamp.ToString("O"));
+            upsert.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
+    public ReadingProgressSnapshot? GetProgress(long bookId)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT locator, progress_percent, updated_utc
+            FROM reading_progress
+            WHERE book_id = $book_id
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$book_id", bookId);
+
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return new ReadingProgressSnapshot(
+            BookId: bookId,
+            Locator: reader.GetString(0),
+            ProgressPercent: reader.IsDBNull(1) ? null : reader.GetDouble(1),
+            UpdatedUtc: ParseTimestamp(reader.GetString(2)));
+    }
+
+    public IReadOnlyList<ReadingBookmark> GetBookmarks(long bookId)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT bookmark_id, name, locator, created_utc
+            FROM reading_bookmarks
+            WHERE book_id = $book_id
+            ORDER BY datetime(created_utc) DESC, bookmark_id DESC;
+            """;
+        command.Parameters.AddWithValue("$book_id", bookId);
+
+        using var reader = command.ExecuteReader();
+        var bookmarks = new List<ReadingBookmark>();
+        while (reader.Read())
+        {
+            bookmarks.Add(new ReadingBookmark(
+                BookmarkId: reader.GetInt64(0),
+                BookId: bookId,
+                Name: reader.GetString(1),
+                Locator: reader.GetString(2),
+                CreatedUtc: ParseTimestamp(reader.GetString(3))));
+        }
+
+        return bookmarks;
+    }
+
+    public long AddBookmark(long bookId, string name, string locator)
+    {
+        var normalizedName = name?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedName))
+        {
+            throw new ArgumentException("Bookmark name is required.", nameof(name));
+        }
+
+        var normalizedLocator = locator?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedLocator))
+        {
+            throw new ArgumentException("Bookmark locator is required.", nameof(locator));
+        }
+
+        var timestamp = DateTimeOffset.UtcNow;
+
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        EnsureBookExists(connection, transaction, bookId);
+
+        using var insert = connection.CreateCommand();
+        insert.Transaction = transaction;
+        insert.CommandText = """
+            INSERT INTO reading_bookmarks (book_id, name, locator, created_utc)
+            VALUES ($book_id, $name, $locator, $created_utc);
+
+            SELECT last_insert_rowid();
+            """;
+        insert.Parameters.AddWithValue("$book_id", bookId);
+        insert.Parameters.AddWithValue("$name", normalizedName);
+        insert.Parameters.AddWithValue("$locator", normalizedLocator);
+        insert.Parameters.AddWithValue("$created_utc", timestamp.ToString("O"));
+
+        var bookmarkId = Convert.ToInt64(insert.ExecuteScalar());
+        transaction.Commit();
+        return bookmarkId;
+    }
+
+    public bool RemoveBookmark(long bookId, long bookmarkId)
+    {
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        EnsureBookExists(connection, transaction, bookId);
+
+        using var delete = connection.CreateCommand();
+        delete.Transaction = transaction;
+        delete.CommandText = """
+            DELETE FROM reading_bookmarks
+            WHERE bookmark_id = $bookmark_id AND book_id = $book_id;
+            """;
+        delete.Parameters.AddWithValue("$bookmark_id", bookmarkId);
+        delete.Parameters.AddWithValue("$book_id", bookId);
+
+        var affectedRows = delete.ExecuteNonQuery();
+        transaction.Commit();
+        return affectedRows > 0;
+    }
+
     public BookOrganizationSnapshot GetBookOrganization(long bookId)
     {
         using var connection = OpenConnection();
@@ -619,6 +790,16 @@ public sealed class SqliteLibraryStore : ILibraryStore
         }
 
         return names;
+    }
+
+    private static DateTimeOffset ParseTimestamp(string rawTimestamp)
+    {
+        if (DateTimeOffset.TryParse(rawTimestamp, out var parsed))
+        {
+            return parsed;
+        }
+
+        return DateTimeOffset.UnixEpoch;
     }
 
     private static BookReadingStatus? ParseReadingStatus(string? rawStatus)
