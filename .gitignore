@@ -1,6 +1,7 @@
 # Build artifacts
 bin/
 obj/
+.avalonia-build-tasks/
 
 # Rider / VS / VSCode
 .vs/
